@@ -55,6 +55,7 @@ const modelLayerHeight = `${100 / contentSpaceRatio}%`
 const chatLayerHeight = `${(CHAT_INPUT_SPACE_RATIO / contentSpaceRatio) * 100}%`
 let heartbeatTimer: ReturnType<typeof setTimeout> | undefined
 let dialogueHideTimer: ReturnType<typeof setTimeout> | undefined
+let dialogueShowFrame: number | undefined
 
 onMounted(startListening)
 
@@ -158,7 +159,14 @@ useTauriListen<number>(LISTEN_KEY.SET_EXPRESSION, ({ payload }) => {
   live2d.setExpression(payload)
 })
 
-function handleMouseDown() {
+function isInteractiveTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement
+    && Boolean(target.closest('input, textarea, button, select, form, [contenteditable="true"]'))
+}
+
+function handleMouseDown(event: MouseEvent) {
+  if (isInteractiveTarget(event.target)) return
+
   appWindow.startDragging()
 }
 
@@ -205,6 +213,11 @@ function clearDialogueTimers() {
     heartbeatTimer = void 0
   }
 
+  if (dialogueShowFrame) {
+    cancelAnimationFrame(dialogueShowFrame)
+    dialogueShowFrame = void 0
+  }
+
   if (dialogueHideTimer) {
     clearTimeout(dialogueHideTimer)
     dialogueHideTimer = void 0
@@ -229,24 +242,47 @@ function showDialogue(text: string, duration = 5_000, shouldScheduleNext = true)
     dialogueHideTimer = void 0
   }
 
-  dialogueText.value = text
-  dialogueVisible.value = true
+  if (dialogueShowFrame) {
+    cancelAnimationFrame(dialogueShowFrame)
+    dialogueShowFrame = void 0
+  }
 
-  if (duration <= 0) return
+  const show = () => {
+    dialogueShowFrame = void 0
+    dialogueText.value = text
+    dialogueVisible.value = true
 
-  dialogueHideTimer = setTimeout(() => {
-    hideDialogue()
+    if (duration <= 0) return
 
-    if (shouldScheduleNext) {
-      scheduleNextHeartbeat()
-    }
-  }, duration)
+    dialogueHideTimer = setTimeout(() => {
+      hideDialogue()
+
+      if (shouldScheduleNext) {
+        scheduleNextHeartbeat()
+      }
+    }, duration)
+  }
+
+  if (!dialogueVisible.value) {
+    show()
+    return
+  }
+
+  dialogueVisible.value = false
+  dialogueShowFrame = requestAnimationFrame(() => {
+    dialogueShowFrame = requestAnimationFrame(show)
+  })
 }
 
 function hideDialogue() {
   dialogueVisible.value = false
-  dialogueText.value = ''
   dialogueHideTimer = void 0
+
+  requestAnimationFrame(() => {
+    if (dialogueVisible.value) return
+
+    dialogueText.value = ''
+  })
 }
 
 async function runHeartbeat() {
@@ -311,7 +347,7 @@ async function handleChatSubmit() {
       { role: 'model', text: reply },
     ].slice(-8)
 
-    showDialogue(reply, 8_000)
+    showDialogue(reply, 12_000)
 
     await Promise.all([
       applyPetMemoryUpdates(memoryUpdates).catch(() => {}),
@@ -336,8 +372,8 @@ async function handleChatSubmit() {
     @mousemove="handleMouseMove"
   >
     <div
-      v-if="dialogueVisible"
       class="dialogue-bubble-panel"
+      :class="{ 'is-visible': dialogueVisible }"
       @mousedown.stop
       @mousemove.stop
     >
@@ -374,9 +410,13 @@ async function handleChatSubmit() {
     <form
       class="chat-input-panel"
       :style="{ height: chatLayerHeight }"
+      @click.stop
       @contextmenu.stop
       @mousedown.stop
       @mousemove.stop
+      @mouseup.stop
+      @pointerdown.stop
+      @pointerup.stop
       @submit.prevent="handleChatSubmit"
     >
       <input
@@ -384,6 +424,9 @@ async function handleChatSubmit() {
         class="chat-input"
         :disabled="chatLoading"
         placeholder="和猫猫说点什么..."
+        @click.stop
+        @mousedown.stop
+        @pointerdown.stop
       >
 
       <button
@@ -411,9 +454,11 @@ async function handleChatSubmit() {
   position: absolute;
   z-index: 10;
   top: 8px;
-  left: 50%;
-  width: min(220px, calc(100% - 24px));
+  right: 0;
+  left: 0;
+  width: min(280px, calc(100% - 24px));
   min-height: 38px;
+  margin: 0 auto;
   padding: 8px 12px;
   color: #000;
   font-size: clamp(13px, 4vw, 18px);
@@ -421,12 +466,19 @@ async function handleChatSubmit() {
   text-align: center;
   word-break: break-word;
   overflow-wrap: anywhere;
-  pointer-events: auto;
+  pointer-events: none;
   background: #fff;
   border: 1px solid rgb(0 0 0 / 18%);
   border-radius: 8px;
-  box-shadow: 0 3px 10px rgb(0 0 0 / 18%);
-  transform: translateX(-50%);
+  opacity: 0;
+  visibility: hidden;
+  contain: paint;
+  isolation: isolate;
+}
+
+.dialogue-bubble-panel.is-visible {
+  opacity: 1;
+  visibility: visible;
 }
 
 .dialogue-bubble-panel::after {
@@ -440,6 +492,10 @@ async function handleChatSubmit() {
   border-right: 1px solid rgb(0 0 0 / 18%);
   border-bottom: 1px solid rgb(0 0 0 / 18%);
   transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.dialogue-bubble-panel:not(.is-visible)::after {
+  display: none;
 }
 
 .chat-input-panel {

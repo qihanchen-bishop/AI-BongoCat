@@ -6,6 +6,7 @@ export interface PetActivitySummary {
   mouseMoveEvents: number
   mouseDistance: number
   active: boolean
+  inferredState: string
   lastActivityAt?: string
 }
 
@@ -58,6 +59,7 @@ export function recordMouseMoveActivity(point: CursorPoint) {
 
 export function consumePetActivitySummary(): PetActivitySummary {
   const endedAt = new Date()
+  const inferredState = inferActivityState()
   const summary = {
     startedAt: activity.startedAt.toISOString(),
     endedAt: endedAt.toISOString(),
@@ -66,6 +68,7 @@ export function consumePetActivitySummary(): PetActivitySummary {
     mouseMoveEvents: activity.mouseMoveEvents,
     mouseDistance: Math.round(activity.mouseDistance),
     active: Boolean(activity.lastActivityAt),
+    inferredState,
     lastActivityAt: activity.lastActivityAt?.toISOString(),
   } satisfies PetActivitySummary
 
@@ -80,6 +83,32 @@ export function consumePetActivitySummary(): PetActivitySummary {
   return summary
 }
 
+function inferActivityState() {
+  const interactionCount = activity.keyboardPresses + activity.mouseClicks
+
+  if (!activity.lastActivityAt) {
+    return '几乎没有活动，用户可能离开、休息或在思考。'
+  }
+
+  if (activity.keyboardPresses >= 120 && activity.mouseClicks >= 20) {
+    return '键盘和鼠标都很频繁，用户可能正在高强度处理任务。'
+  }
+
+  if (activity.keyboardPresses >= 120) {
+    return '键盘输入很多，用户可能在专注写作、编码或聊天。'
+  }
+
+  if (activity.mouseClicks >= 30 || activity.mouseDistance >= 20_000) {
+    return '鼠标操作很多，用户可能在浏览、整理资料、调试或切换窗口。'
+  }
+
+  if (interactionCount <= 5) {
+    return '活动很少，用户可能刚回来、短暂休息或在看屏幕思考。'
+  }
+
+  return '有一些键盘鼠标活动，用户可能在轻量工作或日常操作。'
+}
+
 export function formatPetActivityForPrompt(summary: PetActivitySummary) {
   return [
     `统计开始：${summary.startedAt}`,
@@ -90,5 +119,6 @@ export function formatPetActivityForPrompt(summary: PetActivitySummary) {
     `鼠标移动事件数：${summary.mouseMoveEvents}`,
     `鼠标移动距离估计：${summary.mouseDistance}px`,
     `最后活动时间：${summary.lastActivityAt ?? '无'}`,
+    `本地粗略状态判断：${summary.inferredState}`,
   ].join('\n')
 }
