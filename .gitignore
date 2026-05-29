@@ -15,6 +15,15 @@ dist-ssr
 *.local
 target
 
+# AI BongoCat local runtime data and personal configs
+pet-memory/
+memory.json
+tasks.json
+debug.log
+src/assets/pet/*.local.json
+src/assets/pet/*.private.json
+src/assets/pet/personal/
+
 # Editor directories and files
 .idea
 .DS_Store

@@ -2,9 +2,11 @@ import heartbeat from '@/assets/pet/heartbeat.json'
 import persona from '@/assets/pet/persona.json'
 import { GEMINI_API_KEY, GEMINI_MODEL } from '@/config/gemini'
 
+import type { PetActivitySummary } from './petActivity'
 import type { PetMemoryUpdate } from './petMemory'
 import type { PetTaskUpdate } from './petTasks'
 
+import { formatPetActivityForPrompt } from './petActivity'
 import { logPetDebug } from './petDebugLog'
 import { formatPetMemoryForPrompt, loadPetMemory } from './petMemory'
 import { formatPetTasksForPrompt, loadPetTasks } from './petTasks'
@@ -219,7 +221,7 @@ export async function generatePetReply(messages: GeminiMessage[]) {
   }
 }
 
-export async function generatePetHeartbeat() {
+export async function generatePetHeartbeat(activitySummary: PetActivitySummary) {
   if (!GEMINI_API_KEY) {
     throw new Error('请先配置 Gemini API Key')
   }
@@ -231,10 +233,12 @@ export async function generatePetHeartbeat() {
 
   const memoryText = formatPetMemoryForPrompt(memory)
   const taskText = formatPetTasksForPrompt(tasks)
+  const activityText = formatPetActivityForPrompt(activitySummary)
 
   await logPetDebug('heartbeat.request', {
     memory: memory.items,
     tasks: tasks.tasks,
+    activity: activitySummary,
   })
 
   const response = await fetch(GEMINI_API_URL, {
@@ -259,9 +263,11 @@ export async function generatePetHeartbeat() {
             memoryText,
             '当前启用的定时任务：',
             taskText,
+            '两次心跳之间的键盘鼠标活动统计：',
+            activityText,
             '输出格式只能是一个 JSON 对象，不要输出 Markdown、代码块或额外解释。',
             'JSON 格式：{"reply":"适合主动显示时填写简短回复，否则为空字符串","memory_updates":[{"id":"稳定的英文或拼音记忆键","content":"更新后的中文记忆内容"}],"task_updates":[{"action":"upsert","id":"task_id","title":"任务标题","content":"任务内容","enabled":true},{"action":"delete","id":"task_id"}]}',
-            '如果没有必要主动说话，reply 必须是空字符串。',
+            '每次心跳 reply 都必须填写一句自然、简短、能显示在气泡里的话。',
             'task_updates 只返回需要新增、覆盖或删除的任务；没有更新时返回空数组。',
             '不要把当前已有任务原样放进 task_updates。',
             '如果只是执行提醒，不要更新任务；只在 reply 中给出一句自然提醒。',
@@ -274,7 +280,7 @@ export async function generatePetHeartbeat() {
           text: [
             '心跳触发。',
             `当前时间：${new Date().toLocaleString()}`,
-            '请检查记忆和定时任务，决定是否主动回复，并维护需要更新的记忆和任务。',
+            '请检查记忆、定时任务和键盘鼠标活动，给出一句主动回复，并维护需要更新的记忆和任务。',
           ].join('\n'),
         }],
       }],

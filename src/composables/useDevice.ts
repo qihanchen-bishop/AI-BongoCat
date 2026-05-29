@@ -5,6 +5,7 @@ import { isNil } from 'es-toolkit'
 import { Ticker } from 'pixi.js'
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 
+import { recordKeyboardActivity, recordMouseButtonActivity, recordMouseMoveActivity } from '@/services/petActivity'
 import { useAppStore } from '@/stores/app'
 import { useCatStore } from '@/stores/cat'
 import { useModelStore } from '@/stores/model'
@@ -185,6 +186,14 @@ export function useDevice() {
 
   useTauriListen<DeviceEvent>(LISTEN_KEY.DEVICE_CHANGED, ({ payload }) => {
     const { kind, value } = payload
+
+    if (kind === 'KeyboardPress' || kind === 'KeyboardRelease') {
+      recordKeyboardActivity(kind)
+    } else if (kind === 'MousePress' || kind === 'MouseRelease') {
+      recordMouseButtonActivity(kind)
+    } else {
+      recordMouseMoveActivity(value)
+    }
 
     if (kind === 'KeyboardPress' || kind === 'KeyboardRelease') {
       const nextValue = getSupportedKey(value)

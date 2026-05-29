@@ -23,6 +23,7 @@ import { useTauriListen } from '@/composables/useTauriListen'
 import { CHAT_INPUT_SPACE_RATIO, DIALOGUE_BUBBLE_SPACE_RATIO, LISTEN_KEY } from '@/constants'
 import { hideWindow, setAlwaysOnTop, setTaskbarVisibility, showWindow } from '@/plugins/window'
 import { generatePetHeartbeat, generatePetReply } from '@/services/gemini'
+import { consumePetActivitySummary } from '@/services/petActivity'
 import { applyPetMemoryUpdates } from '@/services/petMemory'
 import { applyPetTaskUpdates } from '@/services/petTasks'
 import { useCatStore } from '@/stores/cat'
@@ -256,24 +257,25 @@ async function runHeartbeat() {
     return
   }
 
+  const activitySummary = consumePetActivitySummary()
+
   try {
     const {
       reply,
       memory_updates: memoryUpdates,
       task_updates: taskUpdates,
-    } = await generatePetHeartbeat()
+    } = await generatePetHeartbeat(activitySummary)
 
     await Promise.all([
       applyPetMemoryUpdates(memoryUpdates).catch(() => {}),
       applyPetTaskUpdates(taskUpdates).catch(() => {}),
     ])
 
-    if (reply) {
-      showDialogue(reply, heartbeat.replyDurationMs)
-      return
-    }
+    showDialogue(reply || '我在这里陪着你。', heartbeat.replyDurationMs)
+    return
   } catch {
-    // Heartbeats should stay quiet when network or API calls fail.
+    showDialogue('我刚刚有点走神，但还在陪你。', heartbeat.replyDurationMs)
+    return
   }
 
   scheduleNextHeartbeat()
