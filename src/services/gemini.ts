@@ -51,9 +51,16 @@ function parsePetReplyPayload(text: string): PetReplyPayload {
     .replace(/^```(?:json)?/i, '')
     .replace(/```$/, '')
     .trim()
+  const relaxedJson = normalized
+    .replace(/'/g, '"')
+    .replace(/\bTrue\b/g, 'true')
+    .replace(/\bFalse\b/g, 'false')
+    .replace(/\bNone\b/g, 'null')
   const candidates = [
     normalized,
     normalized.match(/\{[\s\S]*\}/)?.[0],
+    relaxedJson,
+    relaxedJson.match(/\{[\s\S]*\}/)?.[0],
   ].filter(Boolean) as string[]
 
   let payload: Partial<PetReplyPayload> | undefined
@@ -110,6 +117,14 @@ function extractReplyFallback(text: string) {
     .replace(/\\n/g, '\n')
     .replace(/\\"/g, '"')
     .trim()
+}
+
+function createEmptyPetReplyPayload(): PetReplyPayload {
+  return {
+    reply: '',
+    memory_updates: [],
+    task_updates: [],
+  }
 }
 
 export async function generatePetReply(messages: GeminiMessage[]) {
@@ -226,6 +241,8 @@ export async function generatePetHeartbeat() {
             'JSON 格式：{"reply":"适合主动显示时填写简短回复，否则为空字符串","memory_updates":[{"id":"稳定的英文或拼音记忆键","content":"更新后的中文记忆内容"}],"task_updates":[{"action":"upsert","id":"task_id","title":"任务标题","content":"任务内容","enabled":true},{"action":"delete","id":"task_id"}]}',
             '如果没有必要主动说话，reply 必须是空字符串。',
             'task_updates 只返回需要新增、覆盖或删除的任务；没有更新时返回空数组。',
+            '不要把当前已有任务原样放进 task_updates。',
+            '如果只是执行提醒，不要更新任务；只在 reply 中给出一句自然提醒。',
           ].join('\n'),
         }],
       },
@@ -262,10 +279,6 @@ export async function generatePetHeartbeat() {
   try {
     return parsePetReplyPayload(text)
   } catch {
-    return {
-      reply: extractReplyFallback(text),
-      memory_updates: [],
-      task_updates: [],
-    } satisfies PetReplyPayload
+    return createEmptyPetReplyPayload()
   }
 }
