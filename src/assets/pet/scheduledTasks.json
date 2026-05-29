@@ -1,0 +1,20 @@
+[
+  {
+    "id": "drink_water",
+    "title": "喝水提醒",
+    "content": "偶尔提醒用户喝水，但不要每次心跳都提醒。",
+    "enabled": true
+  },
+  {
+    "id": "rest_eyes",
+    "title": "休息提醒",
+    "content": "如果用户像是在长时间工作，温柔提醒休息眼睛或伸懒腰。",
+    "enabled": true
+  },
+  {
+    "id": "daily_mood",
+    "title": "状态关心",
+    "content": "根据记忆和最近对话，偶尔关心用户今天的状态。",
+    "enabled": true
+  }
+]

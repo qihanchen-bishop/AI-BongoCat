@@ -14,7 +14,7 @@ import { onMounted, onUnmounted, ref, watch } from 'vue'
 
 import type { GeminiMessage } from '@/services/gemini'
 
-import randomDialogues from '@/assets/dialogues/random.json'
+import heartbeat from '@/assets/pet/heartbeat.json'
 import { useAppMenu } from '@/composables/useAppMenu'
 import { useDevice } from '@/composables/useDevice'
 import { useGamepad } from '@/composables/useGamepad'
@@ -22,8 +22,9 @@ import { useModel } from '@/composables/useModel'
 import { useTauriListen } from '@/composables/useTauriListen'
 import { CHAT_INPUT_SPACE_RATIO, DIALOGUE_BUBBLE_SPACE_RATIO, LISTEN_KEY } from '@/constants'
 import { hideWindow, setAlwaysOnTop, setTaskbarVisibility, showWindow } from '@/plugins/window'
-import { generatePetReply } from '@/services/gemini'
+import { generatePetHeartbeat, generatePetReply } from '@/services/gemini'
 import { applyPetMemoryUpdates } from '@/services/petMemory'
+import { applyPetTaskUpdates } from '@/services/petTasks'
 import { useCatStore } from '@/stores/cat'
 import { useGeneralStore } from '@/stores/general.ts'
 import { useModelStore } from '@/stores/model'
@@ -51,12 +52,12 @@ const chatHistory = ref<GeminiMessage[]>([])
 const contentSpaceRatio = 1 + DIALOGUE_BUBBLE_SPACE_RATIO + CHAT_INPUT_SPACE_RATIO
 const modelLayerHeight = `${100 / contentSpaceRatio}%`
 const chatLayerHeight = `${(CHAT_INPUT_SPACE_RATIO / contentSpaceRatio) * 100}%`
-let dialogueDelayTimer: ReturnType<typeof setTimeout> | undefined
+let heartbeatTimer: ReturnType<typeof setTimeout> | undefined
 let dialogueHideTimer: ReturnType<typeof setTimeout> | undefined
 
 onMounted(startListening)
 
-onMounted(scheduleNextDialogue)
+onMounted(scheduleNextHeartbeat)
 
 onUnmounted(() => {
   handleDestroy()
@@ -197,14 +198,10 @@ function handleMouseMove(event: MouseEvent) {
   catStore.window.scale = round(nextScale)
 }
 
-function getRandomItem<T>(items: readonly T[]) {
-  return items[Math.floor(Math.random() * items.length)]
-}
-
 function clearDialogueTimers() {
-  if (dialogueDelayTimer) {
-    clearTimeout(dialogueDelayTimer)
-    dialogueDelayTimer = void 0
+  if (heartbeatTimer) {
+    clearTimeout(heartbeatTimer)
+    heartbeatTimer = void 0
   }
 
   if (dialogueHideTimer) {
@@ -213,16 +210,16 @@ function clearDialogueTimers() {
   }
 }
 
-function scheduleNextDialogue() {
+function scheduleNextHeartbeat() {
   if (chatLoading.value) return
 
-  if (dialogueDelayTimer) {
-    clearTimeout(dialogueDelayTimer)
+  if (heartbeatTimer) {
+    clearTimeout(heartbeatTimer)
   }
 
-  const delay = 12_000 + Math.random() * 18_000
+  const delay = Math.max(10, heartbeat.intervalSeconds) * 1_000
 
-  dialogueDelayTimer = setTimeout(showRandomDialogue, delay)
+  heartbeatTimer = setTimeout(runHeartbeat, delay)
 }
 
 function showDialogue(text: string, duration = 5_000, shouldScheduleNext = true) {
@@ -240,7 +237,7 @@ function showDialogue(text: string, duration = 5_000, shouldScheduleNext = true)
     hideDialogue()
 
     if (shouldScheduleNext) {
-      scheduleNextDialogue()
+      scheduleNextHeartbeat()
     }
   }, duration)
 }
@@ -251,22 +248,35 @@ function hideDialogue() {
   dialogueHideTimer = void 0
 }
 
-function showRandomDialogue() {
-  dialogueDelayTimer = void 0
+async function runHeartbeat() {
+  heartbeatTimer = void 0
 
   if (chatLoading.value || dialogueVisible.value) {
-    scheduleNextDialogue()
+    scheduleNextHeartbeat()
     return
   }
 
-  const text = getRandomItem(randomDialogues)
+  try {
+    const {
+      reply,
+      memory_updates: memoryUpdates,
+      task_updates: taskUpdates,
+    } = await generatePetHeartbeat()
 
-  if (!text) {
-    scheduleNextDialogue()
-    return
+    await Promise.all([
+      applyPetMemoryUpdates(memoryUpdates).catch(() => {}),
+      applyPetTaskUpdates(taskUpdates).catch(() => {}),
+    ])
+
+    if (reply) {
+      showDialogue(reply, heartbeat.replyDurationMs)
+      return
+    }
+  } catch {
+    // Heartbeats should stay quiet when network or API calls fail.
   }
 
-  showDialogue(text)
+  scheduleNextHeartbeat()
 }
 
 async function handleChatSubmit() {
@@ -288,7 +298,11 @@ async function handleChatSubmit() {
   showDialogue('让我想想...', 0, false)
 
   try {
-    const { reply, memory_updates: memoryUpdates } = await generatePetReply(nextHistory)
+    const {
+      reply,
+      memory_updates: memoryUpdates,
+      task_updates: taskUpdates,
+    } = await generatePetReply(nextHistory)
 
     chatHistory.value = [
       ...nextHistory,
@@ -297,7 +311,10 @@ async function handleChatSubmit() {
 
     showDialogue(reply, 8_000)
 
-    await applyPetMemoryUpdates(memoryUpdates).catch(() => {})
+    await Promise.all([
+      applyPetMemoryUpdates(memoryUpdates).catch(() => {}),
+      applyPetTaskUpdates(taskUpdates).catch(() => {}),
+    ])
   } catch (error) {
     showDialogue(error instanceof Error ? error.message : '我刚刚没听清，再说一次？', 7_000)
   } finally {
