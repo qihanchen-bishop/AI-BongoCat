@@ -23,6 +23,7 @@ import { useTauriListen } from '@/composables/useTauriListen'
 import { CHAT_INPUT_SPACE_RATIO, DIALOGUE_BUBBLE_SPACE_RATIO, LISTEN_KEY } from '@/constants'
 import { hideWindow, setAlwaysOnTop, setTaskbarVisibility, showWindow } from '@/plugins/window'
 import { generatePetReply } from '@/services/gemini'
+import { applyPetMemoryUpdates } from '@/services/petMemory'
 import { useCatStore } from '@/stores/cat'
 import { useGeneralStore } from '@/stores/general.ts'
 import { useModelStore } from '@/stores/model'
@@ -287,7 +288,7 @@ async function handleChatSubmit() {
   showDialogue('让我想想...', 0, false)
 
   try {
-    const reply = await generatePetReply(nextHistory)
+    const { reply, memory_updates: memoryUpdates } = await generatePetReply(nextHistory)
 
     chatHistory.value = [
       ...nextHistory,
@@ -295,6 +296,8 @@ async function handleChatSubmit() {
     ].slice(-8)
 
     showDialogue(reply, 8_000)
+
+    await applyPetMemoryUpdates(memoryUpdates).catch(() => {})
   } catch (error) {
     showDialogue(error instanceof Error ? error.message : '我刚刚没听清，再说一次？', 7_000)
   } finally {
