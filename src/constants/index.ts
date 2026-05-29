@@ -31,3 +31,5 @@ export const WINDOW_LABEL = {
   MAIN: 'main',
   PREFERENCE: 'preference',
 } as const
+
+export const DIALOGUE_BUBBLE_SPACE_RATIO = 0.28

@@ -12,12 +12,13 @@ import { round } from 'es-toolkit'
 import { nth } from 'es-toolkit/compat'
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 
+import randomDialogues from '@/assets/dialogues/random.json'
 import { useAppMenu } from '@/composables/useAppMenu'
 import { useDevice } from '@/composables/useDevice'
 import { useGamepad } from '@/composables/useGamepad'
 import { useModel } from '@/composables/useModel'
 import { useTauriListen } from '@/composables/useTauriListen'
-import { LISTEN_KEY } from '@/constants'
+import { DIALOGUE_BUBBLE_SPACE_RATIO, LISTEN_KEY } from '@/constants'
 import { hideWindow, setAlwaysOnTop, setTaskbarVisibility, showWindow } from '@/plugins/window'
 import { useCatStore } from '@/stores/cat'
 import { useGeneralStore } from '@/stores/general.ts'
@@ -38,10 +39,20 @@ const generalStore = useGeneralStore()
 const resizing = ref(false)
 const backgroundImagePath = ref<string>()
 const { stickActive } = useGamepad()
+const dialogueText = ref('')
+const dialogueVisible = ref(false)
+const modelLayerHeight = `${100 / (1 + DIALOGUE_BUBBLE_SPACE_RATIO)}%`
+let dialogueDelayTimer: ReturnType<typeof setTimeout> | undefined
+let dialogueHideTimer: ReturnType<typeof setTimeout> | undefined
 
 onMounted(startListening)
 
-onUnmounted(handleDestroy)
+onMounted(scheduleNextDialogue)
+
+onUnmounted(() => {
+  handleDestroy()
+  clearDialogueTimers()
+})
 
 const debouncedResize = useDebounceFn(async () => {
   await handleResize()
@@ -90,11 +101,12 @@ watch([() => catStore.window.scale, modelSize], async ([scale, modelSize]) => {
   if (!modelSize) return
 
   const { width, height } = modelSize
+  const dialogueSpace = height * DIALOGUE_BUBBLE_SPACE_RATIO
 
   appWindow.setSize(
     new PhysicalSize({
       width: Math.round(width * (scale / 100)),
-      height: Math.round(height * (scale / 100)),
+      height: Math.round((height + dialogueSpace) * (scale / 100)),
     }),
   )
 }, { immediate: true })
@@ -175,38 +187,108 @@ function handleMouseMove(event: MouseEvent) {
 
   catStore.window.scale = round(nextScale)
 }
+
+function getRandomItem<T>(items: readonly T[]) {
+  return items[Math.floor(Math.random() * items.length)]
+}
+
+function clearDialogueTimers() {
+  if (dialogueDelayTimer) {
+    clearTimeout(dialogueDelayTimer)
+    dialogueDelayTimer = void 0
+  }
+
+  if (dialogueHideTimer) {
+    clearTimeout(dialogueHideTimer)
+    dialogueHideTimer = void 0
+  }
+}
+
+function scheduleNextDialogue() {
+  if (dialogueDelayTimer) {
+    clearTimeout(dialogueDelayTimer)
+  }
+
+  const delay = 12_000 + Math.random() * 18_000
+
+  dialogueDelayTimer = setTimeout(showRandomDialogue, delay)
+}
+
+function showRandomDialogue() {
+  dialogueDelayTimer = void 0
+
+  if (dialogueHideTimer) {
+    clearTimeout(dialogueHideTimer)
+    dialogueHideTimer = void 0
+  }
+
+  const text = getRandomItem(randomDialogues)
+
+  if (!text) {
+    scheduleNextDialogue()
+    return
+  }
+
+  dialogueText.value = text
+  dialogueVisible.value = true
+
+  dialogueHideTimer = setTimeout(() => {
+    dialogueVisible.value = false
+    dialogueText.value = ''
+    dialogueHideTimer = void 0
+    scheduleNextDialogue()
+  }, 5_000)
+}
 </script>
 
 <template>
   <div
-    class="relative size-screen overflow-hidden children:(absolute size-full)"
-    :class="{ '-scale-x-100': catStore.model.mirror }"
+    class="relative size-screen overflow-hidden"
     :style="{
-      opacity: catStore.window.opacity / 100,
       borderRadius: `${catStore.window.radius}%`,
     }"
     @contextmenu="handleContextmenu"
     @mousedown="handleMouseDown"
     @mousemove="handleMouseMove"
   >
-    <img
-      v-if="backgroundImagePath"
-      class="object-cover"
-      :src="backgroundImagePath"
+    <div
+      v-if="dialogueVisible"
+      class="dialogue-bubble-panel"
+      @mousedown.stop
+      @mousemove.stop
     >
+      <span class="break-words leading-snug">
+        {{ dialogueText }}
+      </span>
+    </div>
 
-    <canvas id="live2dCanvas" />
-
-    <img
-      v-for="path in modelStore.pressedKeys"
-      :key="path"
-      class="object-cover"
-      :src="convertFileSrc(path)"
+    <div
+      class="absolute bottom-0 left-0 w-full children:(absolute size-full)"
+      :class="{ '-scale-x-100': catStore.model.mirror }"
+      :style="{
+        height: modelLayerHeight,
+        opacity: catStore.window.opacity / 100,
+      }"
     >
+      <img
+        v-if="backgroundImagePath"
+        class="object-cover"
+        :src="backgroundImagePath"
+      >
+
+      <canvas id="live2dCanvas" />
+
+      <img
+        v-for="path in modelStore.pressedKeys"
+        :key="path"
+        class="object-cover"
+        :src="convertFileSrc(path)"
+      >
+    </div>
 
     <div
       v-show="resizing || !modelStore.modelReady"
-      class="flex items-center justify-center bg-black"
+      class="absolute left-0 top-0 size-full flex items-center justify-center bg-black"
     >
       <span class="text-center text-[10vw] text-[#fff]">
         {{ resizing ? $t('pages.main.hints.redrawing') : $t('pages.main.hints.switching') }}
@@ -214,3 +296,40 @@ function handleMouseMove(event: MouseEvent) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.dialogue-bubble-panel {
+  position: absolute;
+  z-index: 10;
+  top: 8px;
+  left: 50%;
+  width: min(220px, calc(100% - 24px));
+  min-height: 38px;
+  padding: 8px 12px;
+  color: #000;
+  font-size: clamp(13px, 4vw, 18px);
+  line-height: 1.35;
+  text-align: center;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+  background: #fff;
+  border: 1px solid rgb(0 0 0 / 18%);
+  border-radius: 8px;
+  box-shadow: 0 3px 10px rgb(0 0 0 / 18%);
+  transform: translateX(-50%);
+}
+
+.dialogue-bubble-panel::after {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 12px;
+  height: 12px;
+  content: '';
+  background: #fff;
+  border-right: 1px solid rgb(0 0 0 / 18%);
+  border-bottom: 1px solid rgb(0 0 0 / 18%);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+</style>
