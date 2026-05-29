@@ -33,3 +33,5 @@ export const WINDOW_LABEL = {
 } as const
 
 export const DIALOGUE_BUBBLE_SPACE_RATIO = 0.28
+
+export const CHAT_INPUT_SPACE_RATIO = 0.18

@@ -12,14 +12,17 @@ import { round } from 'es-toolkit'
 import { nth } from 'es-toolkit/compat'
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 
+import type { GeminiMessage } from '@/services/gemini'
+
 import randomDialogues from '@/assets/dialogues/random.json'
 import { useAppMenu } from '@/composables/useAppMenu'
 import { useDevice } from '@/composables/useDevice'
 import { useGamepad } from '@/composables/useGamepad'
 import { useModel } from '@/composables/useModel'
 import { useTauriListen } from '@/composables/useTauriListen'
-import { DIALOGUE_BUBBLE_SPACE_RATIO, LISTEN_KEY } from '@/constants'
+import { CHAT_INPUT_SPACE_RATIO, DIALOGUE_BUBBLE_SPACE_RATIO, LISTEN_KEY } from '@/constants'
 import { hideWindow, setAlwaysOnTop, setTaskbarVisibility, showWindow } from '@/plugins/window'
+import { generatePetReply } from '@/services/gemini'
 import { useCatStore } from '@/stores/cat'
 import { useGeneralStore } from '@/stores/general.ts'
 import { useModelStore } from '@/stores/model'
@@ -41,7 +44,12 @@ const backgroundImagePath = ref<string>()
 const { stickActive } = useGamepad()
 const dialogueText = ref('')
 const dialogueVisible = ref(false)
-const modelLayerHeight = `${100 / (1 + DIALOGUE_BUBBLE_SPACE_RATIO)}%`
+const chatInput = ref('')
+const chatLoading = ref(false)
+const chatHistory = ref<GeminiMessage[]>([])
+const contentSpaceRatio = 1 + DIALOGUE_BUBBLE_SPACE_RATIO + CHAT_INPUT_SPACE_RATIO
+const modelLayerHeight = `${100 / contentSpaceRatio}%`
+const chatLayerHeight = `${(CHAT_INPUT_SPACE_RATIO / contentSpaceRatio) * 100}%`
 let dialogueDelayTimer: ReturnType<typeof setTimeout> | undefined
 let dialogueHideTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -101,12 +109,12 @@ watch([() => catStore.window.scale, modelSize], async ([scale, modelSize]) => {
   if (!modelSize) return
 
   const { width, height } = modelSize
-  const dialogueSpace = height * DIALOGUE_BUBBLE_SPACE_RATIO
+  const extraSpace = height * (DIALOGUE_BUBBLE_SPACE_RATIO + CHAT_INPUT_SPACE_RATIO)
 
   appWindow.setSize(
     new PhysicalSize({
       width: Math.round(width * (scale / 100)),
-      height: Math.round((height + dialogueSpace) * (scale / 100)),
+      height: Math.round((height + extraSpace) * (scale / 100)),
     }),
   )
 }, { immediate: true })
@@ -205,6 +213,8 @@ function clearDialogueTimers() {
 }
 
 function scheduleNextDialogue() {
+  if (chatLoading.value) return
+
   if (dialogueDelayTimer) {
     clearTimeout(dialogueDelayTimer)
   }
@@ -214,12 +224,38 @@ function scheduleNextDialogue() {
   dialogueDelayTimer = setTimeout(showRandomDialogue, delay)
 }
 
-function showRandomDialogue() {
-  dialogueDelayTimer = void 0
-
+function showDialogue(text: string, duration = 5_000, shouldScheduleNext = true) {
   if (dialogueHideTimer) {
     clearTimeout(dialogueHideTimer)
     dialogueHideTimer = void 0
+  }
+
+  dialogueText.value = text
+  dialogueVisible.value = true
+
+  if (duration <= 0) return
+
+  dialogueHideTimer = setTimeout(() => {
+    hideDialogue()
+
+    if (shouldScheduleNext) {
+      scheduleNextDialogue()
+    }
+  }, duration)
+}
+
+function hideDialogue() {
+  dialogueVisible.value = false
+  dialogueText.value = ''
+  dialogueHideTimer = void 0
+}
+
+function showRandomDialogue() {
+  dialogueDelayTimer = void 0
+
+  if (chatLoading.value || dialogueVisible.value) {
+    scheduleNextDialogue()
+    return
   }
 
   const text = getRandomItem(randomDialogues)
@@ -229,15 +265,41 @@ function showRandomDialogue() {
     return
   }
 
-  dialogueText.value = text
-  dialogueVisible.value = true
+  showDialogue(text)
+}
 
-  dialogueHideTimer = setTimeout(() => {
-    dialogueVisible.value = false
-    dialogueText.value = ''
-    dialogueHideTimer = void 0
-    scheduleNextDialogue()
-  }, 5_000)
+async function handleChatSubmit() {
+  const text = chatInput.value.trim()
+
+  if (!text || chatLoading.value) return
+
+  clearDialogueTimers()
+
+  chatInput.value = ''
+  chatLoading.value = true
+
+  const nextHistory: GeminiMessage[] = [
+    ...chatHistory.value,
+    { role: 'user', text },
+  ].slice(-8)
+
+  chatHistory.value = nextHistory
+  showDialogue('让我想想...', 0, false)
+
+  try {
+    const reply = await generatePetReply(nextHistory)
+
+    chatHistory.value = [
+      ...nextHistory,
+      { role: 'model', text: reply },
+    ].slice(-8)
+
+    showDialogue(reply, 8_000)
+  } catch (error) {
+    showDialogue(error instanceof Error ? error.message : '我刚刚没听清，再说一次？', 7_000)
+  } finally {
+    chatLoading.value = false
+  }
 }
 </script>
 
@@ -267,6 +329,7 @@ function showRandomDialogue() {
       :class="{ '-scale-x-100': catStore.model.mirror }"
       :style="{
         height: modelLayerHeight,
+        bottom: chatLayerHeight,
         opacity: catStore.window.opacity / 100,
       }"
     >
@@ -285,6 +348,30 @@ function showRandomDialogue() {
         :src="convertFileSrc(path)"
       >
     </div>
+
+    <form
+      class="chat-input-panel"
+      :style="{ height: chatLayerHeight }"
+      @contextmenu.stop
+      @mousedown.stop
+      @mousemove.stop
+      @submit.prevent="handleChatSubmit"
+    >
+      <input
+        v-model="chatInput"
+        class="chat-input"
+        :disabled="chatLoading"
+        placeholder="和猫猫说点什么..."
+      >
+
+      <button
+        class="chat-submit"
+        :disabled="chatLoading || !chatInput.trim()"
+        type="submit"
+      >
+        {{ chatLoading ? '...' : '发送' }}
+      </button>
+    </form>
 
     <div
       v-show="resizing || !modelStore.modelReady"
@@ -331,5 +418,56 @@ function showRandomDialogue() {
   border-right: 1px solid rgb(0 0 0 / 18%);
   border-bottom: 1px solid rgb(0 0 0 / 18%);
   transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.chat-input-panel {
+  position: absolute;
+  z-index: 20;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  min-height: 42px;
+  padding: 6px 8px 8px;
+  pointer-events: auto;
+}
+
+.chat-input {
+  min-width: 0;
+  height: 30px;
+  flex: 1;
+  padding: 0 10px;
+  color: #111;
+  font-size: 13px;
+  background: #fff;
+  border: 1px solid rgb(0 0 0 / 20%);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 16%);
+  outline: none;
+}
+
+.chat-input:focus {
+  border-color: rgb(0 0 0 / 42%);
+}
+
+.chat-submit {
+  width: 52px;
+  height: 30px;
+  flex: none;
+  color: #fff;
+  font-size: 13px;
+  background: #111;
+  border: 0;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 18%);
+  cursor: pointer;
+}
+
+.chat-submit:disabled,
+.chat-input:disabled {
+  cursor: default;
+  opacity: 0.62;
 }
 </style>

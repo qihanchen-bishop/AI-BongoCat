@@ -8,7 +8,7 @@ import { isNil, round } from 'es-toolkit'
 import { findKey, nth } from 'es-toolkit/compat'
 import { ref } from 'vue'
 
-import { DIALOGUE_BUBBLE_SPACE_RATIO } from '@/constants'
+import { CHAT_INPUT_SPACE_RATIO, DIALOGUE_BUBBLE_SPACE_RATIO } from '@/constants'
 import { useCatStore } from '@/stores/cat'
 import { useModelStore } from '@/stores/model'
 import { getCursorMonitor } from '@/utils/monitor'
@@ -26,7 +26,7 @@ export interface ModelSize {
 }
 
 function getWindowHeight(modelSize: ModelSize, width: number) {
-  const ratio = (modelSize.height * (1 + DIALOGUE_BUBBLE_SPACE_RATIO)) / modelSize.width
+  const ratio = (modelSize.height * (1 + DIALOGUE_BUBBLE_SPACE_RATIO + CHAT_INPUT_SPACE_RATIO)) / modelSize.width
 
   return Math.ceil(width * ratio)
 }
