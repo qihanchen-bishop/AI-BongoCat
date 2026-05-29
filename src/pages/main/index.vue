@@ -12,7 +12,7 @@ import { round } from 'es-toolkit'
 import { nth } from 'es-toolkit/compat'
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 
-import type { GeminiMessage } from '@/services/gemini'
+import type { LLMMessage } from '@/services/gemini'
 
 import heartbeat from '@/assets/pet/heartbeat.json'
 import { useAppMenu } from '@/composables/useAppMenu'
@@ -49,7 +49,7 @@ const dialogueText = ref('')
 const dialogueVisible = ref(false)
 const chatInput = ref('')
 const chatLoading = ref(false)
-const chatHistory = ref<GeminiMessage[]>([])
+const chatHistory = ref<LLMMessage[]>([])
 const contentSpaceRatio = 1 + DIALOGUE_BUBBLE_SPACE_RATIO + CHAT_INPUT_SPACE_RATIO
 const modelLayerHeight = `${100 / contentSpaceRatio}%`
 const chatLayerHeight = `${(CHAT_INPUT_SPACE_RATIO / contentSpaceRatio) * 100}%`
@@ -291,7 +291,7 @@ async function handleChatSubmit() {
   chatInput.value = ''
   chatLoading.value = true
 
-  const nextHistory: GeminiMessage[] = [
+  const nextHistory: LLMMessage[] = [
     ...chatHistory.value,
     { role: 'user', text },
   ].slice(-8)

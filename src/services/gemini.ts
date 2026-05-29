@@ -1,6 +1,6 @@
 import heartbeat from '@/assets/pet/heartbeat.json'
 import persona from '@/assets/pet/persona.json'
-import { GEMINI_API_KEY, GEMINI_MODEL } from '@/config/gemini'
+import { GROQ_API_KEY, GROQ_API_URL, GROQ_MODELS, LLM_PROVIDER } from '@/config/llm'
 
 import type { PetActivitySummary } from './petActivity'
 import type { PetMemoryUpdate } from './petMemory'
@@ -11,25 +11,30 @@ import { logPetDebug } from './petDebugLog'
 import { formatPetMemoryForPrompt, loadPetMemory } from './petMemory'
 import { formatPetTasksForPrompt, loadPetTasks } from './petTasks'
 
-type GeminiRole = 'user' | 'model'
+type LLMRole = 'user' | 'model'
 
-export interface GeminiMessage {
-  role: GeminiRole
+export interface LLMMessage {
+  role: LLMRole
   text: string
 }
 
-interface GeminiPart {
-  text?: string
+type GroqRole = 'system' | 'user' | 'assistant'
+
+interface GroqMessage {
+  role: GroqRole
+  content: string
 }
 
-interface GeminiResponse {
-  candidates?: Array<{
-    content?: {
-      parts?: GeminiPart[]
+interface GroqResponse {
+  choices?: Array<{
+    message?: {
+      content?: string
     }
   }>
   error?: {
     message?: string
+    type?: string
+    code?: string
   }
 }
 
@@ -39,14 +44,8 @@ export interface PetReplyPayload {
   task_updates: PetTaskUpdate[]
 }
 
-const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
-
-function extractResponseText(data: GeminiResponse) {
-  return data.candidates?.[0]?.content?.parts
-    ?.map(part => part.text)
-    .filter(Boolean)
-    .join('')
-    .trim()
+function extractResponseText(data: GroqResponse) {
+  return data.choices?.[0]?.message?.content?.trim()
 }
 
 function parsePetReplyPayload(text: string): PetReplyPayload {
@@ -81,7 +80,7 @@ function parsePetReplyPayload(text: string): PetReplyPayload {
         break
       }
     } catch {
-      // Try the next candidate. Gemini may wrap the JSON as a string.
+      // Try the next candidate. Models may wrap the JSON as a string.
     }
   }
 
@@ -130,9 +129,101 @@ function createEmptyPetReplyPayload(): PetReplyPayload {
   }
 }
 
-export async function generatePetReply(messages: GeminiMessage[]) {
-  if (!GEMINI_API_KEY) {
-    throw new Error('请先配置 Gemini API Key')
+function toGroqMessages(systemPrompt: string, messages: LLMMessage[]): GroqMessage[] {
+  return [
+    { role: 'system', content: systemPrompt },
+    ...messages.map(message => ({
+      role: message.role === 'model' ? 'assistant' : 'user',
+      content: message.text,
+    }) satisfies GroqMessage),
+  ]
+}
+
+function isFallbackError(status: number, data: GroqResponse) {
+  const message = data.error?.message?.toLowerCase() ?? ''
+  const code = data.error?.code?.toLowerCase() ?? ''
+  const type = data.error?.type?.toLowerCase() ?? ''
+
+  return status === 429
+    || status === 503
+    || status === 500
+    || status === 400
+    || message.includes('rate limit')
+    || message.includes('quota')
+    || message.includes('model')
+    || code.includes('rate')
+    || code.includes('quota')
+    || type.includes('rate')
+}
+
+async function createChatCompletion(messages: GroqMessage[], maxTokens: number) {
+  if (!GROQ_API_KEY) {
+    throw new Error('请先配置 Groq API Key')
+  }
+
+  if (!GROQ_MODELS.length) {
+    throw new Error('请至少配置一个 Groq 模型')
+  }
+
+  let lastError: Error | undefined
+
+  for (const model of GROQ_MODELS) {
+    await logPetDebug('llm.model_attempt', { provider: LLM_PROVIDER, model })
+
+    const response = await fetch(GROQ_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0.8,
+        max_tokens: maxTokens,
+        response_format: { type: 'json_object' },
+      }),
+    })
+
+    const data = await response.json() as GroqResponse
+
+    if (response.ok) {
+      await logPetDebug('llm.model_success', { provider: LLM_PROVIDER, model })
+
+      const text = extractResponseText(data)
+
+      if (!text) {
+        lastError = new Error('Groq 没有返回内容')
+        continue
+      }
+
+      return {
+        model,
+        text,
+      }
+    }
+
+    lastError = new Error(data.error?.message ?? `Groq 请求失败，HTTP ${response.status}`)
+
+    await logPetDebug('llm.model_failed', {
+      provider: LLM_PROVIDER,
+      model,
+      status: response.status,
+      error: data.error,
+      willFallback: isFallbackError(response.status, data),
+    })
+
+    if (!isFallbackError(response.status, data)) {
+      break
+    }
+  }
+
+  throw lastError ?? new Error('Groq 请求失败')
+}
+
+export async function generatePetReply(messages: LLMMessage[]) {
+  if (!GROQ_API_KEY) {
+    throw new Error('请先配置 Groq API Key')
   }
 
   const memory = await loadPetMemory()
@@ -143,57 +234,25 @@ export async function generatePetReply(messages: GeminiMessage[]) {
     memory: memory.items,
   })
 
-  const response = await fetch(GEMINI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': GEMINI_API_KEY,
-    },
-    body: JSON.stringify({
-      system_instruction: {
-        parts: [{
-          text: [
-            '你是一个桌面宠物猫对话引擎。你必须严格按照 JSON 输出。',
-            `小猫名字：${persona.name}`,
-            `小猫物种：${persona.species}`,
-            `对用户的称呼：${persona.userAddress}`,
-            `小猫性格：${persona.personality.join('；')}`,
-            `回复规则：${persona.replyRules.join('；')}`,
-            `记忆规则：${persona.memoryRules.join('；')}`,
-            '已保存的长期记忆：',
-            memoryText,
-            '输出格式只能是一个 JSON 对象，不要输出 Markdown、代码块或额外解释。',
-            'JSON 格式：{"reply":"给用户看的简短回复","memory_updates":[{"id":"稳定的英文或拼音记忆键","content":"更新后的中文记忆内容"}],"task_updates":[]}',
-            'memory_updates 必须只包含需要新增或覆盖的重要长期记忆；没有更新时返回空数组。',
-            '普通聊天通常不要修改 task_updates，除非用户明确要求创建、修改或删除提醒任务。',
-          ].join('\n'),
-        }],
-      },
-      contents: messages.map(message => ({
-        role: message.role,
-        parts: [{ text: message.text }],
-      })),
-      generationConfig: {
-        temperature: 0.8,
-        maxOutputTokens: 256,
-        responseMimeType: 'application/json',
-      },
-    }),
-  })
+  const systemPrompt = [
+    '你是一个桌面宠物猫对话引擎。你必须严格按照 JSON 输出。',
+    `小猫名字：${persona.name}`,
+    `小猫物种：${persona.species}`,
+    `对用户的称呼：${persona.userAddress}`,
+    `小猫性格：${persona.personality.join('；')}`,
+    `回复规则：${persona.replyRules.join('；')}`,
+    `记忆规则：${persona.memoryRules.join('；')}`,
+    '已保存的长期记忆：',
+    memoryText,
+    '输出格式只能是一个 JSON 对象，不要输出 Markdown、代码块或额外解释。',
+    'JSON 格式：{"reply":"给用户看的简短回复","memory_updates":[{"id":"稳定的英文或拼音记忆键","content":"更新后的中文记忆内容"}],"task_updates":[]}',
+    'memory_updates 必须只包含需要新增或覆盖的重要长期记忆；没有更新时返回空数组。',
+    '普通聊天通常不要修改 task_updates，除非用户明确要求创建、修改或删除提醒任务。',
+  ].join('\n')
 
-  const data = await response.json() as GeminiResponse
+  const { model, text } = await createChatCompletion(toGroqMessages(systemPrompt, messages), 256)
 
-  if (!response.ok) {
-    throw new Error(data.error?.message ?? 'Gemini 请求失败')
-  }
-
-  const text = extractResponseText(data)
-
-  if (!text) {
-    throw new Error('Gemini 没有返回内容')
-  }
-
-  await logPetDebug('chat.raw_response', { text })
+  await logPetDebug('chat.raw_response', { model, text })
 
   try {
     const payload = parsePetReplyPayload(text)
@@ -222,8 +281,8 @@ export async function generatePetReply(messages: GeminiMessage[]) {
 }
 
 export async function generatePetHeartbeat(activitySummary: PetActivitySummary) {
-  if (!GEMINI_API_KEY) {
-    throw new Error('请先配置 Gemini API Key')
+  if (!GROQ_API_KEY) {
+    throw new Error('请先配置 Groq API Key')
   }
 
   const [memory, tasks] = await Promise.all([
@@ -241,70 +300,39 @@ export async function generatePetHeartbeat(activitySummary: PetActivitySummary) 
     activity: activitySummary,
   })
 
-  const response = await fetch(GEMINI_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': GEMINI_API_KEY,
-    },
-    body: JSON.stringify({
-      system_instruction: {
-        parts: [{
-          text: [
-            '你是桌面宠物猫的心跳维护引擎。你必须严格按照 JSON 输出。',
-            `小猫名字：${persona.name}`,
-            `小猫物种：${persona.species}`,
-            `对用户的称呼：${persona.userAddress}`,
-            `小猫性格：${persona.personality.join('；')}`,
-            `回复规则：${persona.replyRules.join('；')}`,
-            `记忆规则：${persona.memoryRules.join('；')}`,
-            `心跳规则：${heartbeat.rules.join('；')}`,
-            '已保存的长期记忆：',
-            memoryText,
-            '当前启用的定时任务：',
-            taskText,
-            '两次心跳之间的键盘鼠标活动统计：',
-            activityText,
-            '输出格式只能是一个 JSON 对象，不要输出 Markdown、代码块或额外解释。',
-            'JSON 格式：{"reply":"适合主动显示时填写简短回复，否则为空字符串","memory_updates":[{"id":"稳定的英文或拼音记忆键","content":"更新后的中文记忆内容"}],"task_updates":[{"action":"upsert","id":"task_id","title":"任务标题","content":"任务内容","enabled":true},{"action":"delete","id":"task_id"}]}',
-            '每次心跳 reply 都必须填写一句自然、简短、能显示在气泡里的话。',
-            'task_updates 只返回需要新增、覆盖或删除的任务；没有更新时返回空数组。',
-            '不要把当前已有任务原样放进 task_updates。',
-            '如果只是执行提醒，不要更新任务；只在 reply 中给出一句自然提醒。',
-          ].join('\n'),
-        }],
-      },
-      contents: [{
-        role: 'user',
-        parts: [{
-          text: [
-            '心跳触发。',
-            `当前时间：${new Date().toLocaleString()}`,
-            '请检查记忆、定时任务和键盘鼠标活动，给出一句主动回复，并维护需要更新的记忆和任务。',
-          ].join('\n'),
-        }],
-      }],
-      generationConfig: {
-        temperature: 0.8,
-        maxOutputTokens: 320,
-        responseMimeType: 'application/json',
-      },
-    }),
-  })
+  const systemPrompt = [
+    '你是桌面宠物猫的心跳维护引擎。你必须严格按照 JSON 输出。',
+    `小猫名字：${persona.name}`,
+    `小猫物种：${persona.species}`,
+    `对用户的称呼：${persona.userAddress}`,
+    `小猫性格：${persona.personality.join('；')}`,
+    `回复规则：${persona.replyRules.join('；')}`,
+    `记忆规则：${persona.memoryRules.join('；')}`,
+    `心跳规则：${heartbeat.rules.join('；')}`,
+    '已保存的长期记忆：',
+    memoryText,
+    '当前启用的定时任务：',
+    taskText,
+    '两次心跳之间的键盘鼠标活动统计：',
+    activityText,
+    '输出格式只能是一个 JSON 对象，不要输出 Markdown、代码块或额外解释。',
+    'JSON 格式：{"reply":"适合主动显示时填写简短回复，否则为空字符串","memory_updates":[{"id":"稳定的英文或拼音记忆键","content":"更新后的中文记忆内容"}],"task_updates":[{"action":"upsert","id":"task_id","title":"任务标题","content":"任务内容","enabled":true},{"action":"delete","id":"task_id"}]}',
+    '每次心跳 reply 都必须填写一句自然、简短、能显示在气泡里的话。',
+    'task_updates 只返回需要新增、覆盖或删除的任务；没有更新时返回空数组。',
+    '不要把当前已有任务原样放进 task_updates。',
+    '如果只是执行提醒，不要更新任务；只在 reply 中给出一句自然提醒。',
+  ].join('\n')
+  const userPrompt = [
+    '心跳触发。',
+    `当前时间：${new Date().toLocaleString()}`,
+    '请检查记忆、定时任务和键盘鼠标活动，给出一句主动回复，并维护需要更新的记忆和任务。',
+  ].join('\n')
+  const { model, text } = await createChatCompletion(
+    [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+    320,
+  )
 
-  const data = await response.json() as GeminiResponse
-
-  if (!response.ok) {
-    throw new Error(data.error?.message ?? 'Gemini 请求失败')
-  }
-
-  const text = extractResponseText(data)
-
-  if (!text) {
-    throw new Error('Gemini 没有返回内容')
-  }
-
-  await logPetDebug('heartbeat.raw_response', { text })
+  await logPetDebug('heartbeat.raw_response', { model, text })
 
   try {
     const payload = parsePetReplyPayload(text)
