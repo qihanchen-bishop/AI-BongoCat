@@ -333,7 +333,7 @@ async function handleChatSubmit() {
   ].slice(-8)
 
   chatHistory.value = nextHistory
-  showDialogue('让我想想...', 0, false)
+  hideDialogue()
 
   try {
     const {
@@ -434,7 +434,7 @@ async function handleChatSubmit() {
         :disabled="chatLoading || !chatInput.trim()"
         type="submit"
       >
-        {{ chatLoading ? '...' : '发送' }}
+        {{ chatLoading ? '等待' : '发送' }}
       </button>
     </form>
 
@@ -456,8 +456,8 @@ async function handleChatSubmit() {
   top: 8px;
   right: 0;
   left: 0;
-  width: min(280px, calc(100% - 24px));
-  min-height: 38px;
+  width: min(320px, calc(100% - 24px));
+  height: 68px;
   margin: 0 auto;
   padding: 8px 12px;
   color: #000;
@@ -466,6 +466,7 @@ async function handleChatSubmit() {
   text-align: center;
   word-break: break-word;
   overflow-wrap: anywhere;
+  overflow: hidden;
   pointer-events: none;
   background: #fff;
   border: 1px solid rgb(0 0 0 / 18%);
