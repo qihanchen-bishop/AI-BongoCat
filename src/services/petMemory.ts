@@ -3,6 +3,8 @@ import { exists, mkdir, readTextFile, writeTextFile } from '@tauri-apps/plugin-f
 
 import { join } from '@/utils/path'
 
+import { logPetDebug } from './petDebugLog'
+
 export interface PetMemoryItem {
   id: string
   content: string
@@ -103,9 +105,12 @@ export async function applyPetMemoryUpdates(updates: PetMemoryUpdate[]) {
     })
   }
 
-  await savePetMemory({
+  const nextMemory = {
     version: 1,
     updatedAt: now,
     items: [...itemMap.values()],
-  })
+  } satisfies PetMemoryFile
+
+  await savePetMemory(nextMemory)
+  await logPetDebug('memory.updated', { updates: validUpdates, items: nextMemory.items })
 }

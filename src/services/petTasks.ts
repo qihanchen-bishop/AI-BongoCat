@@ -4,12 +4,15 @@ import { exists, mkdir, readTextFile, writeTextFile } from '@tauri-apps/plugin-f
 import defaultTasks from '@/assets/pet/scheduledTasks.json'
 import { join } from '@/utils/path'
 
+import { logPetDebug } from './petDebugLog'
+
 export interface PetTask {
   id: string
   title: string
   content: string
   enabled: boolean
   updatedAt: string
+  source?: 'config' | 'runtime'
 }
 
 export interface PetTaskUpdate {
@@ -28,6 +31,7 @@ interface PetTaskFile {
 
 const TASK_DIR_NAME = 'pet-memory'
 const TASK_FILE_NAME = 'tasks.json'
+const LEGACY_CONFIG_TASK_IDS = new Set(['drink_water', 'rest_eyes', 'daily_mood'])
 
 async function getTaskPath() {
   const dir = join(await appDataDir(), TASK_DIR_NAME)
@@ -61,9 +65,28 @@ function createDefaultTaskFile(): PetTaskFile {
     version: 1,
     updatedAt: now,
     tasks: defaultTasks
-      .map(task => normalizeTask(task, now))
+      .map(task => normalizeTask({ ...task, source: 'config' }, now))
       .filter(task => task !== null),
   }
+}
+
+function syncConfiguredTasks(taskFile: PetTaskFile) {
+  const now = new Date().toISOString()
+  const configTasks = defaultTasks
+    .map(task => normalizeTask({ ...task, source: 'config' }, now))
+    .filter(task => task !== null)
+  const configTaskIds = new Set(configTasks.map(task => task.id))
+  const runtimeTasks = taskFile.tasks.filter((task) => {
+    return task.source !== 'config'
+      && !configTaskIds.has(task.id)
+      && !LEGACY_CONFIG_TASK_IDS.has(task.id)
+  })
+
+  return {
+    version: 1,
+    updatedAt: now,
+    tasks: [...configTasks, ...runtimeTasks],
+  } satisfies PetTaskFile
 }
 
 async function ensureTaskDir() {
@@ -81,20 +104,29 @@ export async function loadPetTasks() {
     const taskFile = createDefaultTaskFile()
 
     await savePetTasks(taskFile)
+    await logPetDebug('tasks.initialized', { path: file, tasks: taskFile.tasks })
 
     return taskFile
   }
 
   try {
     const data = JSON.parse(await readTextFile(file)) as PetTaskFile
-
-    return {
+    const taskFile = syncConfiguredTasks({
       version: 1,
       updatedAt: data.updatedAt,
       tasks: Array.isArray(data.tasks) ? data.tasks : [],
-    } satisfies PetTaskFile
+    })
+
+    await savePetTasks(taskFile)
+    await logPetDebug('tasks.loaded', { path: file, tasks: taskFile.tasks })
+
+    return taskFile
   } catch {
-    return createDefaultTaskFile()
+    const taskFile = createDefaultTaskFile()
+
+    await logPetDebug('tasks.load_failed_fallback', { path: file, tasks: taskFile.tasks })
+
+    return taskFile
   }
 }
 
@@ -140,13 +172,19 @@ export async function applyPetTaskUpdates(updates: PetTaskUpdate[]) {
     }, now)
 
     if (nextTask) {
-      taskMap.set(id, nextTask)
+      taskMap.set(id, {
+        ...nextTask,
+        source: existing?.source ?? 'runtime',
+      })
     }
   }
 
-  await savePetTasks({
+  const nextTaskFile = {
     version: 1,
     updatedAt: now,
     tasks: [...taskMap.values()],
-  })
+  } satisfies PetTaskFile
+
+  await savePetTasks(nextTaskFile)
+  await logPetDebug('tasks.updated', { updates, tasks: nextTaskFile.tasks })
 }

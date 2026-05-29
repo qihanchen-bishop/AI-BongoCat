@@ -5,6 +5,7 @@ import { GEMINI_API_KEY, GEMINI_MODEL } from '@/config/gemini'
 import type { PetMemoryUpdate } from './petMemory'
 import type { PetTaskUpdate } from './petTasks'
 
+import { logPetDebug } from './petDebugLog'
 import { formatPetMemoryForPrompt, loadPetMemory } from './petMemory'
 import { formatPetTasksForPrompt, loadPetTasks } from './petTasks'
 
@@ -30,7 +31,7 @@ interface GeminiResponse {
   }
 }
 
-interface PetReplyPayload {
+export interface PetReplyPayload {
   reply: string
   memory_updates: PetMemoryUpdate[]
   task_updates: PetTaskUpdate[]
@@ -135,6 +136,11 @@ export async function generatePetReply(messages: GeminiMessage[]) {
   const memory = await loadPetMemory()
   const memoryText = formatPetMemoryForPrompt(memory)
 
+  await logPetDebug('chat.request', {
+    messages,
+    memory: memory.items,
+  })
+
   const response = await fetch(GEMINI_API_URL, {
     method: 'POST',
     headers: {
@@ -185,6 +191,8 @@ export async function generatePetReply(messages: GeminiMessage[]) {
     throw new Error('Gemini 没有返回内容')
   }
 
+  await logPetDebug('chat.raw_response', { text })
+
   try {
     const payload = parsePetReplyPayload(text)
 
@@ -192,13 +200,22 @@ export async function generatePetReply(messages: GeminiMessage[]) {
       throw new Error('empty reply')
     }
 
+    await logPetDebug('chat.parsed_response', payload)
+
     return payload
-  } catch {
-    return {
+  } catch (error) {
+    const payload = {
       reply: extractReplyFallback(text),
       memory_updates: [],
       task_updates: [],
     } satisfies PetReplyPayload
+
+    await logPetDebug('chat.parse_fallback', {
+      error: error instanceof Error ? error.message : String(error),
+      payload,
+    })
+
+    return payload
   }
 }
 
@@ -214,6 +231,11 @@ export async function generatePetHeartbeat() {
 
   const memoryText = formatPetMemoryForPrompt(memory)
   const taskText = formatPetTasksForPrompt(tasks)
+
+  await logPetDebug('heartbeat.request', {
+    memory: memory.items,
+    tasks: tasks.tasks,
+  })
 
   const response = await fetch(GEMINI_API_URL, {
     method: 'POST',
@@ -276,9 +298,22 @@ export async function generatePetHeartbeat() {
     throw new Error('Gemini 没有返回内容')
   }
 
+  await logPetDebug('heartbeat.raw_response', { text })
+
   try {
-    return parsePetReplyPayload(text)
-  } catch {
-    return createEmptyPetReplyPayload()
+    const payload = parsePetReplyPayload(text)
+
+    await logPetDebug('heartbeat.parsed_response', payload)
+
+    return payload
+  } catch (error) {
+    const payload = createEmptyPetReplyPayload()
+
+    await logPetDebug('heartbeat.parse_failed', {
+      error: error instanceof Error ? error.message : String(error),
+      payload,
+    })
+
+    return payload
   }
 }
